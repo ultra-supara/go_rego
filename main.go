@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/open-policy-agent/opa/rego"
 	"gopkg.in/yaml.v3"
@@ -18,7 +19,7 @@ func LoadYAMLFiles(dir string) ([]map[string]interface{}, error) {
 			return err
 		}
 
-		if filepath.Ext(path) == ".yml" || filepath.Ext(path) == ".yaml" {
+		if strings.HasSuffix(path, ".yml") || strings.HasSuffix(path, ".yaml") {
 			file, err := os.ReadFile(path)
 			if err != nil {
 				return err
@@ -40,48 +41,47 @@ func LoadYAMLFiles(dir string) ([]map[string]interface{}, error) {
 func main() {
 	files, err := LoadYAMLFiles(".github/workflows")
 	if err != nil {
-		fmt.Println(err)
+		fmt.Println("Error reading policy files:", err)
+		return
+	}
+	ctx := context.Background()
+
+	policy, err := os.ReadFile("policy.rego")
+	if err != nil {
+		fmt.Println("Error reading policy file:", err)
 		return
 	}
 
-	ctx := context.Background()
-
 	r := rego.New(
 		rego.Query("data.main.deny"),
-		rego.Module("policy.rego", `
-		package main
-
-		deny{
-			not uses_checkout_v2
-		}
-
-		uses_checkout_v2 {
-			step := input.jobs.build.steps[_]
-			step.uses == "actions/checkout@v2"
-		}`),
+		rego.Module("policy.rego",string(policy)),
 	)
 
 	query, err := r.PrepareForEval(ctx)
 	if err != nil {
-		fmt.Println(err)
+		fmt.Println("Error preparing query for evaluation:", err)
 		return
 	}
+
+	seenMessages := make(map[string]bool)
 
 	for _, file := range files {
 		results, err := query.Eval(ctx, rego.EvalInput(file))
 		if err != nil {
-			fmt.Println(err)
+			fmt.Println("Error evaluating query:", err)
 			return
 		}
 
-		// Print evaluation results for debugging
-		fmt.Println("Evaluation results:", results)
-
 		if len(results) > 0 {
 			expressions := results[0].Expressions
-			if len(expressions) > 0 {
-				if exprValue, ok := expressions[0].Value.(bool); ok && exprValue {
-					fmt.Println("Workflow does not use actions/checkout@v2, exiting with error")
+			for _, expression := range expressions {
+				if msgs, ok := expression.Value.([]interface{}); ok {
+					for _, msg := range msgs {
+						if msgStr, ok := msg.(string); ok && !seenMessages[msgStr] {
+							fmt.Println(msgStr)
+							seenMessages[msgStr] = true
+						}
+					}
 				}
 			}
 		}
