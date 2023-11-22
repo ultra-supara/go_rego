@@ -11,6 +11,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// LoadYAMLFiles は指定されたディレクトリ内のYAMLファイルを読み込みます。
 func LoadYAMLFiles(dir string) ([]map[string]interface{}, error) {
 	var files []map[string]interface{}
 
@@ -38,13 +39,41 @@ func LoadYAMLFiles(dir string) ([]map[string]interface{}, error) {
 	return files, err
 }
 
+// ProcessResults はrego.ResultSetを処理し、重複しないメッセージを出力します。
+func ProcessResults(results rego.ResultSet, seenMessages map[string]bool) {
+    if len(results) == 0 {
+        return
+    }
+
+    for _, result := range results {
+        for _, expression := range result.Expressions {
+            msgs, ok := expression.Value.([]interface{})
+            if !ok {
+                continue
+            }
+
+            for _, msg := range msgs {
+                msgStr, ok := msg.(string)
+                if !ok {
+                    continue
+                }
+
+                if _, seen := seenMessages[msgStr]; !seen {
+                    fmt.Println(msgStr)
+                    seenMessages[msgStr] = true
+                }
+            }
+        }
+    }
+}
+
+
 func main() {
 	files, err := LoadYAMLFiles(".github/workflows")
 	if err != nil {
 		fmt.Println("Error reading policy files:", err)
 		return
 	}
-	ctx := context.Background()
 
 	policy, err := os.ReadFile("policy.rego")
 	if err != nil {
@@ -54,10 +83,10 @@ func main() {
 
 	r := rego.New(
 		rego.Query("data.main.deny"),
-		rego.Module("policy.rego",string(policy)),
+		rego.Module("policy.rego", string(policy)),
 	)
 
-	query, err := r.PrepareForEval(ctx)
+	query, err := r.PrepareForEval(context.Background())
 	if err != nil {
 		fmt.Println("Error preparing query for evaluation:", err)
 		return
@@ -66,24 +95,11 @@ func main() {
 	seenMessages := make(map[string]bool)
 
 	for _, file := range files {
-		results, err := query.Eval(ctx, rego.EvalInput(file))
+		results, err := query.Eval(context.Background(), rego.EvalInput(file))
 		if err != nil {
 			fmt.Println("Error evaluating query:", err)
 			return
 		}
-
-		if len(results) > 0 {
-			expressions := results[0].Expressions
-			for _, expression := range expressions {
-				if msgs, ok := expression.Value.([]interface{}); ok {
-					for _, msg := range msgs {
-						if msgStr, ok := msg.(string); ok && !seenMessages[msgStr] {
-							fmt.Println(msgStr)
-							seenMessages[msgStr] = true
-						}
-					}
-				}
-			}
-		}
+		ProcessResults(results, seenMessages)
 	}
 }
